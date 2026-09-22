@@ -1,0 +1,11 @@
+{
+    "actorSpecification": 1,
+    "name": "laynes-revel-report-exporter",
+    "title": "Layne's Revel Report Exporter",
+    "description": "Logs into the Layne's Revel portal, runs configured reports for selected locations and business dates, and exports the results.",
+    "version": "0.1",
+    "buildTag": "latest",
+    "dockerfile": "../Dockerfile",
+    "input": "./input_schema.json",
+    "output": "./output_schema.json"
+}
