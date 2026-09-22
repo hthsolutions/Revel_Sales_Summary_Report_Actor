@@ -211,10 +211,21 @@ try {
 
     if (
         normalizedStartMeridiem !== 'AM'
-        || normalizedEndMeridiem !== 'AM'
+        && normalizedStartMeridiem !== 'PM'
     ) {
         throw new Error(
-            'The current Actor version supports AM report times only.',
+            `startMeridiem must be AM or PM. `
+            + `Received: ${startMeridiem}`,
+        );
+    }
+
+    if (
+        normalizedEndMeridiem !== 'AM'
+        && normalizedEndMeridiem !== 'PM'
+    ) {
+        throw new Error(
+            `endMeridiem must be AM or PM. `
+            + `Received: ${endMeridiem}`,
         );
     }
 

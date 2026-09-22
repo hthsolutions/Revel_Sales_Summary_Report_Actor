@@ -60,9 +60,10 @@
         "startMeridiem": {
             "title": "Start AM/PM",
             "type": "string",
-            "editor": "hidden",
-            "description": "The current Actor uses AM for the report start time.",
-            "default": "AM"
+            "editor": "select",
+            "description": "AM or PM for the report start time.",
+            "default": "AM",
+            "enum": ["AM", "PM"]
         },
         "endDate": {
             "title": "End date",
@@ -81,9 +82,10 @@
         "endMeridiem": {
             "title": "End AM/PM",
             "type": "string",
-            "editor": "hidden",
-            "description": "The current Actor uses AM for the report end time.",
-            "default": "AM"
+            "editor": "select",
+            "description": "AM or PM for the report end time.",
+            "default": "AM",
+            "enum": ["AM", "PM"]
         }
     },
     "required": [
