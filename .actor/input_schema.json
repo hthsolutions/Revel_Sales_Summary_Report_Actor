@@ -43,12 +43,24 @@
                 "29 | Marble Falls"
             ]
         },
-        "startDate": {
-            "title": "Start date",
+        "override_flag": {
+            "title": "Override dates",
+            "type": "boolean",
+            "editor": "checkbox",
+            "description": "When enabled, the Actor uses override_startDate and override_endDate. When disabled, startDate is yesterday in US Central Time and endDate is today in US Central Time.",
+            "default": false
+        },
+        "override_startDate": {
+            "title": "Override start date",
             "type": "string",
             "editor": "textfield",
-            "description": "Report start date in MM/DD/YYYY format.",
-            "default": "08/31/2026"
+            "description": "Report start date in MM/DD/YYYY format. Used only when override_flag is true."
+        },
+        "override_endDate": {
+            "title": "Override end date",
+            "type": "string",
+            "editor": "textfield",
+            "description": "Report end date in MM/DD/YYYY format. Used only when override_flag is true."
         },
         "startTime": {
             "title": "Start time",
@@ -60,17 +72,9 @@
         "startMeridiem": {
             "title": "Start AM/PM",
             "type": "string",
-            "editor": "select",
-            "description": "AM or PM for the report start time.",
-            "default": "AM",
-            "enum": ["AM", "PM"]
-        },
-        "endDate": {
-            "title": "End date",
-            "type": "string",
-            "editor": "textfield",
-            "description": "Report end date in MM/DD/YYYY format.",
-            "default": "09/01/2026"
+            "editor": "hidden",
+            "description": "The current Actor uses AM for the report start time.",
+            "default": "AM"
         },
         "endTime": {
             "title": "End time",
@@ -82,10 +86,9 @@
         "endMeridiem": {
             "title": "End AM/PM",
             "type": "string",
-            "editor": "select",
-            "description": "AM or PM for the report end time.",
-            "default": "AM",
-            "enum": ["AM", "PM"]
+            "editor": "hidden",
+            "description": "The current Actor uses AM for the report end time.",
+            "default": "AM"
         }
     },
     "required": [
@@ -93,10 +96,9 @@
         "username",
         "password",
         "establishment",
-        "startDate",
+        "override_flag",
         "startTime",
         "startMeridiem",
-        "endDate",
         "endTime",
         "endMeridiem"
     ],

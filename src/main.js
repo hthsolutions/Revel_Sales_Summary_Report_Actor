@@ -77,6 +77,62 @@ function formatDateForFilename(value) {
     return value.replace(/\//g, '');
 }
 
+const CENTRAL_TIME_ZONE = 'America/Chicago';
+
+/**
+ * Calendar date for a moment in US Central Time.
+ */
+function getCentralDateParts(date) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: CENTRAL_TIME_ZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(date);
+
+    const lookup = Object.fromEntries(
+        parts
+            .filter((part) => part.type !== 'literal')
+            .map((part) => [part.type, Number(part.value)]),
+    );
+
+    return {
+        year: lookup.year,
+        month: lookup.month,
+        day: lookup.day,
+    };
+}
+
+function formatDateParts({ year, month, day }) {
+    const monthText = String(month).padStart(2, '0');
+    const dayText = String(day).padStart(2, '0');
+
+    return `${monthText}/${dayText}/${year}`;
+}
+
+/**
+ * Report start date: yesterday in US Central Time, MM/DD/YYYY.
+ */
+function calculateStartDate(today = new Date()) {
+    const { year, month, day } = getCentralDateParts(today);
+    const calendarDate = new Date(Date.UTC(year, month - 1, day));
+
+    calendarDate.setUTCDate(calendarDate.getUTCDate() - 1);
+
+    return formatDateParts({
+        year: calendarDate.getUTCFullYear(),
+        month: calendarDate.getUTCMonth() + 1,
+        day: calendarDate.getUTCDate(),
+    });
+}
+
+/**
+ * Report end date: today in US Central Time, MM/DD/YYYY.
+ */
+function calculateEndDate(today = new Date()) {
+    return formatDateParts(getCentralDateParts(today));
+}
+
 /**
  * Convert each worksheet into a nested dictionary by mapping
  * row 1 headers to row 2 values. Row 3 contains report totals
@@ -154,18 +210,40 @@ try {
         username,
         password,
         establishment = 'Leander',
-        startDate,
+        override_flag = false,
+        override_startDate,
+        override_endDate,
         startTime,
         startMeridiem,
-        endDate,
         endTime,
         endMeridiem,
     } = input ?? {};
+
+    let startDate;
+    let endDate;
+
+    if (override_flag) {
+        if (!override_startDate || !override_endDate) {
+            throw new Error(
+                'override_startDate and override_endDate are required '
+                + 'when override_flag is true.',
+            );
+        }
+
+        startDate = override_startDate;
+        endDate = override_endDate;
+    } else {
+        const today = new Date();
+
+        startDate = calculateStartDate(today);
+        endDate = calculateEndDate(today);
+    }
 
     log.info('Actor input loaded.', {
         hasUsername: Boolean(username),
         hasPassword: Boolean(password),
         establishment,
+        override_flag,
         startDate,
         startTime,
         startMeridiem,
@@ -179,15 +257,13 @@ try {
     }
 
     if (
-        !startDate
-        || !startTime
+        !startTime
         || !startMeridiem
-        || !endDate
         || !endTime
         || !endMeridiem
     ) {
         throw new Error(
-            'Start and end dates, times, and AM/PM values are required.',
+            'Start and end times and AM/PM values are required.',
         );
     }
 
@@ -211,21 +287,10 @@ try {
 
     if (
         normalizedStartMeridiem !== 'AM'
-        && normalizedStartMeridiem !== 'PM'
+        || normalizedEndMeridiem !== 'AM'
     ) {
         throw new Error(
-            `startMeridiem must be AM or PM. `
-            + `Received: ${startMeridiem}`,
-        );
-    }
-
-    if (
-        normalizedEndMeridiem !== 'AM'
-        && normalizedEndMeridiem !== 'PM'
-    ) {
-        throw new Error(
-            `endMeridiem must be AM or PM. `
-            + `Received: ${endMeridiem}`,
+            'The current Actor version supports AM report times only.',
         );
     }
 
