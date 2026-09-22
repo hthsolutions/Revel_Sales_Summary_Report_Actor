@@ -7,9 +7,6 @@ import { createClient } from '@supabase/supabase-js';
 
 await Actor.init();
 
-
-const REPORT_STORE_ID = '1HElnAYC6VVyNaH7m';
-
 const supabaseUrl =
     process.env.SUPABASE_URL
     || 'https://ongqhvokcwceqgnetonq.supabase.co';
@@ -71,10 +68,6 @@ function validateTime(value, fieldName) {
             + `Received: ${value}`,
         );
     }
-}
-
-function formatDateForFilename(value) {
-    return value.replace(/\//g, '');
 }
 
 const CENTRAL_TIME_ZONE = 'America/Chicago';
@@ -295,24 +288,6 @@ try {
     }
 
     const targetEstablishment = 'Leander';
-
-    const outputJsonKey =
-        `LEANDER_${formatDateForFilename(startDate)}`
-        // + `_THRU_${formatDateForFilename(endDate)}`
-        + '_SALES_SUMMARY.json';
-
-    /*
-     * Open the persistent key-value store where structured
-     * report data will be saved.
-     */
-    const reportStore = await Actor.openKeyValueStore(
-        REPORT_STORE_ID,
-    );
-
-    log.info(
-        `Structured reports will be saved to key-value store: `
-        + `${REPORT_STORE_ID}`,
-    );
 
     const crawler = new PlaywrightCrawler({
         maxRequestsPerCrawl: 1,
@@ -973,35 +948,8 @@ try {
                 ),
             );
 
-            const reportData = {
-                metadata: {
-                    establishment: selectedEstablishment,
-                    report: 'Sales Summary',
-                    startDate,
-                    startTime,
-                    startMeridiem: normalizedStartMeridiem,
-                    endDate,
-                    endTime,
-                    endMeridiem: normalizedEndMeridiem,
-                    // sourceFilename: download.suggestedFilename(),
-                    sourceSizeBytes: excelBuffer.length,
-                    extractedAt: new Date().toISOString(),
-                },
-                sheets,
-            };
-
-            await reportStore.setValue(
-                outputJsonKey,
-                reportData,
-            );
-
-            log.info(
-                `Saved structured report to key-value store `
-                + `${REPORT_STORE_ID}: ${outputJsonKey}`,
-            );
-
             const allRevenueCenters =
-                reportData?.sheets?.['All revenue centers'];
+                sheets['All revenue centers'];
 
             if (!allRevenueCenters) {
                 throw new Error(
@@ -1168,13 +1116,6 @@ try {
                 },
             );
 
-            /*
-             * Save the nested JSON dictionary to the specified
-             * persistent key-value store. The original Excel file
-             * is not retained.
-             */
-            
-
             await Actor.pushData({
                 status: 'success',
                 portalUrl: page.url(),
@@ -1187,8 +1128,6 @@ try {
                 endDate,
                 endTime,
                 endMeridiem: normalizedEndMeridiem,
-                jsonStorageKey: outputJsonKey,
-                keyValueStoreId: REPORT_STORE_ID,
                 sheetNames: workbook.SheetNames,
                 fieldCountBySheet,
                 // sourceFilename: download.suggestedFilename(),
@@ -1197,7 +1136,7 @@ try {
                 message:
                     'Logged into Revel, selected Leander, '
                     + 'applied the Sales Summary date range, '
-                    + 'parsed every worksheet, and saved nested JSON.',
+                    + 'parsed every worksheet, and saved the daily sales row.',
             });
         },
 
@@ -1234,8 +1173,6 @@ try {
                 endDate,
                 endTime,
                 endMeridiem: normalizedEndMeridiem,
-                jsonStorageKey: outputJsonKey,
-                keyValueStoreId: REPORT_STORE_ID,
                 timestamp: new Date().toISOString(),
                 message: error.message,
             });
