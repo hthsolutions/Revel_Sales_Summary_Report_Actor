@@ -141,7 +141,12 @@ function workbookToNestedDictionary(workbook) {
     return sheets;
 }
 
+let exitCode = 0;
+let statusMessage;
+
 try {
+    log.info('Reading Actor input.');
+
     const input = await Actor.getInput();
 
     const {
@@ -156,6 +161,18 @@ try {
         endTime,
         endMeridiem,
     } = input ?? {};
+
+    log.info('Actor input loaded.', {
+        hasUsername: Boolean(username),
+        hasPassword: Boolean(password),
+        establishment,
+        startDate,
+        startTime,
+        startMeridiem,
+        endDate,
+        endTime,
+        endMeridiem,
+    });
 
     if (!username || !password) {
         throw new Error('Both username and password are required.');
@@ -1150,6 +1167,17 @@ try {
     });
 
     await crawler.run([url]);
+} catch (error) {
+    const failure = error instanceof Error
+        ? error
+        : new Error(String(error));
+
+    exitCode = 1;
+    statusMessage = failure.message;
+    log.exception(failure, failure.message);
 } finally {
-    await Actor.exit();
+    await Actor.exit({
+        exitCode,
+        ...(statusMessage ? { statusMessage } : {}),
+    });
 }
