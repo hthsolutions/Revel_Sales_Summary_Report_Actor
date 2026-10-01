@@ -204,22 +204,52 @@ async function applyReportFilters(page) {
         .first();
 
     const filtersToggle = filtersArea.locator('.filters-button').first();
-    const filterForm = filtersArea.locator('form#filter_form').first();
+
+    /*
+     * The filter form itself can report as hidden even while the panel is
+     * open, so use a column heading as the open/closed signal.
+     */
+    const panelHeading = filtersArea
+        .getByText(FILTER_COLUMNS_SET_TO_ALL[0], { exact: true })
+        .first();
 
     await filtersArea.waitFor({
         state: 'visible',
         timeout: 20_000,
     });
 
-    if (!(await filterForm.isVisible())) {
-        log.info('Opening the report filters panel.');
+    /*
+     * Switching establishments reloads the report, and the Filters button
+     * ignores clicks until Revel has rebound its handlers.
+     */
+    await waitForReportIdle(page);
+
+    const maxOpenAttempts = 3;
+
+    for (
+        let attempt = 1;
+        !(await panelHeading.isVisible());
+        attempt += 1
+    ) {
+        if (attempt > maxOpenAttempts) {
+            throw new Error(
+                `The Revel filters panel did not open after `
+                + `${maxOpenAttempts} attempts.`,
+            );
+        }
+
+        log.info(
+            `Opening the report filters panel (attempt ${attempt}).`,
+        );
 
         await filtersToggle.click();
 
-        await filterForm.waitFor({
-            state: 'visible',
-            timeout: 20_000,
-        });
+        await panelHeading
+            .waitFor({
+                state: 'visible',
+                timeout: 10_000,
+            })
+            .catch(() => {});
     }
 
     await saveScreenshot(page, 'REVEL_FILTERS_BEFORE');
@@ -503,7 +533,7 @@ async function applyReportFilters(page) {
 
     await applyButton.click();
 
-    await filterForm
+    await panelHeading
         .waitFor({
             state: 'hidden',
             timeout: 30_000,
@@ -515,7 +545,7 @@ async function applyReportFilters(page) {
 
             await filtersToggle.click();
 
-            await filterForm.waitFor({
+            await panelHeading.waitFor({
                 state: 'hidden',
                 timeout: 15_000,
             });
