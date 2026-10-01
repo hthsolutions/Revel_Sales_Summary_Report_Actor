@@ -47,6 +47,60 @@ async function saveScreenshot(page, key) {
     log.info(`Saved screenshot: ${key}`);
 }
 
+/**
+ * Wait until Revel has finished rebuilding the report.
+ *
+ * Hidden loaders can remain in Revel's DOM permanently, so check whether any
+ * matching loader is actually visible instead of waiting for the elements to
+ * be detached.
+ */
+async function waitForReportIdle(page) {
+    await page.waitForFunction(
+        () => {
+            const reportArea =
+                document.querySelector('.report-content')
+                ?? document.querySelector('.report-container')
+                ?? document.querySelector('.reports-content')
+                ?? document.body;
+
+            const loadingElements = reportArea.querySelectorAll([
+                '.loading',
+                '.loader',
+                '.spinner',
+                '.loading-mask',
+                '.blockUI',
+                '.fa-spinner',
+                '.icon-spinner',
+                '[class*="loading-indicator"]',
+            ].join(','));
+
+            return [...loadingElements].every((element) => {
+                const style = window.getComputedStyle(element);
+                const bounds = element.getBoundingClientRect();
+
+                return (
+                    style.display === 'none'
+                    || style.visibility === 'hidden'
+                    || style.opacity === '0'
+                    || bounds.width === 0
+                    || bounds.height === 0
+                );
+            });
+        },
+        undefined,
+        {
+            timeout: 90_000,
+            polling: 500,
+        },
+    );
+
+    /*
+     * Give computed totals and charts a brief opportunity to settle
+     * after the loading indicator disappears.
+     */
+    await page.waitForTimeout(1_500);
+}
+
 function validateDate(value, fieldName) {
     const datePattern =
         /^(0?[1-9]|1[0-2])\/(0?[1-9]|[12]\d|3[01])\/\d{4}$/;
@@ -124,6 +178,372 @@ function calculateStartDate(today = new Date()) {
  */
 function calculateEndDate(today = new Date()) {
     return formatDateParts(getCentralDateParts(today));
+}
+
+const FILTER_COLUMNS_SET_TO_ALL = [
+    'Dining Options',
+    'Pos Stations',
+    'Employees',
+];
+
+const FILTER_COLUMNS_CLEARED = [
+    'Online orders',
+    'Inclusions',
+];
+
+/**
+ * Force the Sales Summary filter panel into a known state.
+ *
+ * Revel remembers the last filter selection for the account and ships with
+ * Unpaid and Irregular pre-checked under Inclusions, so an unattended run can
+ * otherwise export a differently scoped report than expected.
+ */
+async function applyReportFilters(page) {
+    const filtersArea = page
+        .locator('.sales-summary .filters-area')
+        .first();
+
+    const filtersToggle = filtersArea.locator('.filters-button').first();
+    const filterForm = filtersArea.locator('form#filter_form').first();
+
+    await filtersArea.waitFor({
+        state: 'visible',
+        timeout: 20_000,
+    });
+
+    if (!(await filterForm.isVisible())) {
+        log.info('Opening the report filters panel.');
+
+        await filtersToggle.click();
+
+        await filterForm.waitFor({
+            state: 'visible',
+            timeout: 20_000,
+        });
+    }
+
+    await saveScreenshot(page, 'REVEL_FILTERS_BEFORE');
+
+    const filterState = await filtersArea.evaluate(
+        (root, { allColumns, clearedColumns }) => {
+            if (!root.querySelector('form#filter_form')) {
+                throw new Error(
+                    'The Revel filter form (#filter_form) was not found.',
+                );
+            }
+
+            const normalize = (value) => String(value ?? '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            /*
+             * Column headings are matched on their own text so that an outer
+             * wrapper holding several columns can never be mistaken for one.
+             */
+            const ownText = (element) => normalize(
+                [...element.childNodes]
+                    .filter((node) => node.nodeType === Node.TEXT_NODE)
+                    .map((node) => node.textContent)
+                    .join(' '),
+            );
+
+            const titles = [...allColumns, ...clearedColumns];
+            const headings = new Map();
+
+            for (const element of root.querySelectorAll('*')) {
+                const text = ownText(element).toLowerCase();
+
+                const title = titles.find(
+                    (candidate) => candidate.toLowerCase() === text,
+                );
+
+                if (title && !headings.has(title)) {
+                    headings.set(title, element);
+                }
+            }
+
+            const missingTitles = titles.filter(
+                (title) => !headings.has(title),
+            );
+
+            if (missingTitles.length > 0) {
+                throw new Error(
+                    `Filter columns missing from the Revel filter panel: `
+                    + `${missingTitles.join(', ')}`,
+                );
+            }
+
+            const columnElements = new Map();
+
+            for (const [title, heading] of headings) {
+                const otherHeadings = [...headings.entries()]
+                    .filter(([otherTitle]) => otherTitle !== title)
+                    .map(([, element]) => element);
+
+                let node = heading;
+
+                while (
+                    node
+                    && node !== root
+                    && !node.querySelector('input')
+                ) {
+                    node = node.parentElement;
+                }
+
+                if (
+                    !node
+                    || node === root
+                    || otherHeadings.some((other) => node.contains(other))
+                ) {
+                    throw new Error(
+                        `Unable to isolate the "${title}" filter column. `
+                        + `The Revel filter markup has changed.`,
+                    );
+                }
+
+                columnElements.set(title, node);
+            }
+
+            const labelFor = (input) => {
+                if (input.id) {
+                    const explicit = root.querySelector(
+                        `label[for="${CSS.escape(input.id)}"]`,
+                    );
+
+                    if (explicit) return normalize(explicit.textContent);
+                }
+
+                const wrapper = input.closest('label');
+
+                if (wrapper) return normalize(wrapper.textContent);
+
+                return normalize(input.parentElement?.textContent)
+                    || normalize(input.value)
+                    || normalize(input.name)
+                    || '(unlabelled)';
+            };
+
+            /*
+             * Revel binds jQuery change handlers to these inputs, so route the
+             * update through jQuery when it is available.
+             */
+            const setChecked = (input, shouldBeChecked) => {
+                if (input.checked === shouldBeChecked) return false;
+
+                if (window.jQuery) {
+                    window.jQuery(input)
+                        .prop('checked', shouldBeChecked)
+                        .trigger('change');
+                } else {
+                    input.checked = shouldBeChecked;
+
+                    input.dispatchEvent(
+                        new Event('change', { bubbles: true }),
+                    );
+                }
+
+                return true;
+            };
+
+            const changes = [];
+
+            for (const title of allColumns) {
+                const column = columnElements.get(title);
+
+                const radios = [
+                    ...column.querySelectorAll('input[type="radio"]'),
+                ];
+
+                const allRadio = radios.find(
+                    (radio) => /^all\b/i.test(labelFor(radio)),
+                );
+
+                if (!allRadio) {
+                    throw new Error(
+                        `No "All" option found in the "${title}" `
+                        + `filter column.`,
+                    );
+                }
+
+                if (setChecked(allRadio, true)) {
+                    changes.push(
+                        `${title}: selected "${labelFor(allRadio)}"`,
+                    );
+                }
+
+                for (const radio of radios) {
+                    if (radio !== allRadio && radio.checked) {
+                        setChecked(radio, false);
+
+                        changes.push(
+                            `${title}: cleared "${labelFor(radio)}"`,
+                        );
+                    }
+                }
+            }
+
+            for (const title of clearedColumns) {
+                const column = columnElements.get(title);
+
+                const checkboxes = column.querySelectorAll(
+                    'input[type="checkbox"]',
+                );
+
+                for (const checkbox of checkboxes) {
+                    if (setChecked(checkbox, false)) {
+                        changes.push(
+                            `${title}: cleared "${labelFor(checkbox)}"`,
+                        );
+                    }
+                }
+            }
+
+            /*
+             * Re-read every input after the handlers have run so the returned
+             * state reflects what Revel will actually submit.
+             */
+            const columns = {};
+
+            for (const [title, column] of columnElements) {
+                columns[title] = [
+                    ...column.querySelectorAll(
+                        'input[type="radio"], input[type="checkbox"]',
+                    ),
+                ].map((input) => ({
+                    label: labelFor(input),
+                    type: input.type,
+                    checked: input.checked,
+                }));
+            }
+
+            for (const title of allColumns) {
+                const checked = columns[title].filter(
+                    (input) => input.checked,
+                );
+
+                if (
+                    checked.length !== 1
+                    || !/^all\b/i.test(checked[0].label)
+                ) {
+                    throw new Error(
+                        `The "${title}" filter column is not set to "All". `
+                        + `Currently checked: `
+                        + `${checked
+                            .map((input) => input.label)
+                            .join(', ') || 'nothing'}`,
+                    );
+                }
+            }
+
+            for (const title of clearedColumns) {
+                const checked = columns[title].filter(
+                    (input) => input.checked,
+                );
+
+                if (checked.length > 0) {
+                    throw new Error(
+                        `The "${title}" filter column still has `
+                        + `selections: `
+                        + `${checked
+                            .map((input) => input.label)
+                            .join(', ')}`,
+                    );
+                }
+            }
+
+            return { columns, changes };
+        },
+        {
+            allColumns: FILTER_COLUMNS_SET_TO_ALL,
+            clearedColumns: FILTER_COLUMNS_CLEARED,
+        },
+    );
+
+    await Actor.setValue('REVEL_FILTER_STATE', filterState);
+
+    for (const [title, inputs] of Object.entries(filterState.columns)) {
+        const checked = inputs
+            .filter((input) => input.checked)
+            .map((input) => input.label);
+
+        log.info(
+            `Filter "${title}": `
+            + `${checked.join(', ') || 'nothing selected'}`,
+        );
+    }
+
+    if (filterState.changes.length === 0) {
+        log.info('Report filters already matched the required state.');
+    } else {
+        log.info(
+            `Report filters adjusted: `
+            + `${filterState.changes.join('; ')}`,
+        );
+    }
+
+    await saveScreenshot(page, 'REVEL_FILTERS_SET');
+
+    let applyButton = filtersArea
+        .locator('button, a, .button')
+        .filter({ hasText: /^\s*Apply\s*$/ })
+        .first();
+
+    if (await applyButton.count() === 0) {
+        applyButton = filtersArea
+            .locator('input[type="submit"][value="Apply"]')
+            .first();
+    }
+
+    await applyButton.waitFor({
+        state: 'visible',
+        timeout: 20_000,
+    });
+
+    log.info('Applying the report filters.');
+
+    await applyButton.click();
+
+    await filterForm
+        .waitFor({
+            state: 'hidden',
+            timeout: 30_000,
+        })
+        .catch(async () => {
+            log.info(
+                'The filters panel stayed open after Apply. Closing it.',
+            );
+
+            await filtersToggle.click();
+
+            await filterForm.waitFor({
+                state: 'hidden',
+                timeout: 15_000,
+            });
+        });
+
+    await waitForReportIdle(page);
+
+    const filterSummary = (
+        await filtersArea
+            .locator('.chosen.options')
+            .first()
+            .innerText()
+            .catch(() => '')
+    ).replace(/\s+/g, ' ').trim();
+
+    log.info(
+        `Filter summary shown by Revel: `
+        + `${filterSummary || 'none'}`,
+    );
+
+    if (filterSummary !== '') {
+        log.warning(
+            `Revel still reports active filters after Apply: `
+            + `${filterSummary}`,
+        );
+    }
+
+    await saveScreenshot(page, 'REVEL_FILTERS_APPLIED');
 }
 
 /**
@@ -465,6 +885,8 @@ try {
                 'REVEL_LEANDER_SALES_SUMMARY',
             );
 
+            await applyReportFilters(page);
+
             const dateRangeDropdown = page.locator(
                 '.report-date-row .ico-f-to-down',
             );
@@ -801,55 +1223,7 @@ try {
                 + `${displayedRange}`,
             );
 
-            /*
-             * Hidden loaders can remain in Revel's DOM permanently. Check
-             * whether any matching loader is actually visible instead of
-             * waiting for the elements to be detached.
-             */
-            await page.waitForFunction(
-                () => {
-                    const reportArea =
-                        document.querySelector('.report-content')
-                        ?? document.querySelector('.report-container')
-                        ?? document.querySelector('.reports-content')
-                        ?? document.body;
-
-                    const loadingElements = reportArea.querySelectorAll([
-                        '.loading',
-                        '.loader',
-                        '.spinner',
-                        '.loading-mask',
-                        '.blockUI',
-                        '.fa-spinner',
-                        '.icon-spinner',
-                        '[class*="loading-indicator"]',
-                    ].join(','));
-
-                    return [...loadingElements].every((element) => {
-                        const style = window.getComputedStyle(element);
-                        const bounds = element.getBoundingClientRect();
-
-                        return (
-                            style.display === 'none'
-                            || style.visibility === 'hidden'
-                            || style.opacity === '0'
-                            || bounds.width === 0
-                            || bounds.height === 0
-                        );
-                    });
-                },
-                undefined,
-                {
-                    timeout: 90_000,
-                    polling: 500,
-                },
-            );
-
-            /*
-             * Give computed totals and charts a brief opportunity to settle
-             * after the loading indicator disappears.
-             */
-            await page.waitForTimeout(1_500);
+            await waitForReportIdle(page);
 
             await saveScreenshot(
                 page,
