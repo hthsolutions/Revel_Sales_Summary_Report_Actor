@@ -47,27 +47,27 @@
             "title": "Override dates",
             "type": "boolean",
             "editor": "checkbox",
-            "description": "When enabled, the Actor uses override_startDate and override_endDate. When disabled, startDate is yesterday in US Central Time and endDate is today in US Central Time.",
+            "description": "When enabled, the Actor uses override_startDate and override_endDate, which must be the same calendar day. When disabled, both dates are yesterday in US Central Time.",
             "default": false
         },
         "override_startDate": {
             "title": "Override start date",
             "type": "string",
             "editor": "textfield",
-            "description": "Report start date in MM/DD/YYYY format. Used only when override_flag is true."
+            "description": "Report date in MM/DD/YYYY format. Used for both the start and end date when override_flag is true. Must match override_endDate."
         },
         "override_endDate": {
             "title": "Override end date",
             "type": "string",
             "editor": "textfield",
-            "description": "Report end date in MM/DD/YYYY format. Used only when override_flag is true."
+            "description": "Report date in MM/DD/YYYY format. Used for both the start and end date when override_flag is true. Must match override_startDate."
         },
         "startTime": {
             "title": "Start time",
             "type": "string",
-            "editor": "textfield",
-            "description": "Report start time in HH:MM 12-hour format.",
-            "default": "06:00"
+            "editor": "hidden",
+            "description": "The current Actor uses 12:00 AM as the report start time.",
+            "default": "12:00"
         },
         "startMeridiem": {
             "title": "Start AM/PM",
@@ -79,16 +79,16 @@
         "endTime": {
             "title": "End time",
             "type": "string",
-            "editor": "textfield",
-            "description": "Report end time in HH:MM 12-hour format.",
-            "default": "06:00"
+            "editor": "hidden",
+            "description": "The current Actor uses 11:59 PM as the report end time.",
+            "default": "11:59"
         },
         "endMeridiem": {
             "title": "End AM/PM",
             "type": "string",
             "editor": "hidden",
-            "description": "The current Actor uses AM for the report end time.",
-            "default": "AM"
+            "description": "The current Actor uses PM for the report end time.",
+            "default": "PM"
         }
     },
     "required": [

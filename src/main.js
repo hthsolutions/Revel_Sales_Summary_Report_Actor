@@ -124,6 +124,18 @@ function validateTime(value, fieldName) {
     }
 }
 
+function normalizeDate(value) {
+    const [month, day, year] = value.split('/');
+
+    return `${month.padStart(2, '0')}/`
+        + `${day.padStart(2, '0')}/${year}`;
+}
+
+const REPORT_START_TIME = '12:00';
+const REPORT_START_MERIDIEM = 'AM';
+const REPORT_END_TIME = '11:59';
+const REPORT_END_MERIDIEM = 'PM';
+
 const CENTRAL_TIME_ZONE = 'America/Chicago';
 
 /**
@@ -158,7 +170,8 @@ function formatDateParts({ year, month, day }) {
 }
 
 /**
- * Report start date: yesterday in US Central Time, MM/DD/YYYY.
+ * Report date: yesterday in US Central Time, MM/DD/YYYY.
+ * Start and end both use this date so the range is one calendar day.
  */
 function calculateStartDate(today = new Date()) {
     const { year, month, day } = getCentralDateParts(today);
@@ -171,13 +184,6 @@ function calculateStartDate(today = new Date()) {
         month: calendarDate.getUTCMonth() + 1,
         day: calendarDate.getUTCDate(),
     });
-}
-
-/**
- * Report end date: today in US Central Time, MM/DD/YYYY.
- */
-function calculateEndDate(today = new Date()) {
-    return formatDateParts(getCentralDateParts(today));
 }
 
 const FILTER_COLUMNS_SET_TO_ALL = [
@@ -656,11 +662,12 @@ try {
         override_flag = false,
         override_startDate,
         override_endDate,
-        startTime,
-        startMeridiem,
-        endTime,
-        endMeridiem,
     } = input ?? {};
+
+    const startTime = REPORT_START_TIME;
+    const endTime = REPORT_END_TIME;
+    const normalizedStartMeridiem = REPORT_START_MERIDIEM;
+    const normalizedEndMeridiem = REPORT_END_MERIDIEM;
 
     let startDate;
     let endDate;
@@ -673,13 +680,21 @@ try {
             );
         }
 
-        startDate = override_startDate;
-        endDate = override_endDate;
-    } else {
-        const today = new Date();
+        validateDate(override_startDate, 'override_startDate');
+        validateDate(override_endDate, 'override_endDate');
 
-        startDate = calculateStartDate(today);
-        endDate = calculateEndDate(today);
+        startDate = normalizeDate(override_startDate);
+        endDate = normalizeDate(override_endDate);
+
+        if (startDate !== endDate) {
+            throw new Error(
+                'Start date and end date must be the same calendar day. '
+                + `Received ${startDate} and ${endDate}.`,
+            );
+        }
+    } else {
+        startDate = calculateStartDate(new Date());
+        endDate = startDate;
     }
 
     log.info('Actor input loaded.', {
@@ -689,25 +704,14 @@ try {
         override_flag,
         startDate,
         startTime,
-        startMeridiem,
+        startMeridiem: normalizedStartMeridiem,
         endDate,
         endTime,
-        endMeridiem,
+        endMeridiem: normalizedEndMeridiem,
     });
 
     if (!username || !password) {
         throw new Error('Both username and password are required.');
-    }
-
-    if (
-        !startTime
-        || !startMeridiem
-        || !endTime
-        || !endMeridiem
-    ) {
-        throw new Error(
-            'Start and end times and AM/PM values are required.',
-        );
     }
 
     if (establishment !== 'Leander') {
@@ -717,25 +721,8 @@ try {
         );
     }
 
-    validateDate(startDate, 'startDate');
-    validateDate(endDate, 'endDate');
     validateTime(startTime, 'startTime');
     validateTime(endTime, 'endTime');
-
-    const normalizedStartMeridiem =
-        startMeridiem.trim().toUpperCase();
-
-    const normalizedEndMeridiem =
-        endMeridiem.trim().toUpperCase();
-
-    if (
-        normalizedStartMeridiem !== 'AM'
-        || normalizedEndMeridiem !== 'AM'
-    ) {
-        throw new Error(
-            'The current Actor version supports AM report times only.',
-        );
-    }
 
     const targetEstablishment = 'Leander';
 
