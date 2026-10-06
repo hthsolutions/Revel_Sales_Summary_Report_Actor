@@ -582,6 +582,194 @@ async function applyReportFilters(page) {
     await saveScreenshot(page, 'REVEL_FILTERS_APPLIED');
 }
 
+const EXCEL_EXPORT_TIMEOUT_MS = 150_000;
+
+function isExcelExportResponse(response) {
+    const headers = response.headers();
+    const contentType = headers['content-type'] ?? '';
+    const disposition = headers['content-disposition'] ?? '';
+    const target = `${contentType} ${disposition} ${response.url()}`;
+
+    if (/spreadsheetml|vnd\.ms-excel/i.test(contentType)) {
+        return true;
+    }
+
+    return /attachment/i.test(disposition)
+        && /\.xlsx?\b|excel|spreadsheet/i.test(target);
+}
+
+/**
+ * Revel sometimes starts the file from the report page, and sometimes
+ * from a popup or a spreadsheet response that Playwright does not emit
+ * as a download event.
+ */
+async function readExcelExport(page, excelExportLink) {
+    const context = page.context();
+    const observedRequests = [];
+    const dialogMessages = [];
+    const popups = [];
+
+    const exportTarget = await excelExportLink.evaluate((element) => ({
+        tag: element.tagName,
+        href: element.getAttribute('href'),
+        text: (element.textContent || '').replace(/\s+/g, ' ').trim(),
+    }));
+
+    log.info(
+        `Excel export control: ${exportTarget.tag} `
+        + `"${exportTarget.text}" `
+        + `href=${exportTarget.href ?? 'none'}`,
+    );
+
+    let cleanup = () => {};
+
+    const downloadPromise = new Promise((resolve, reject) => {
+        const onDownload = (download) => {
+            cleanup();
+            resolve(download);
+        };
+
+        const onPopup = (popup) => {
+            popups.push(popup);
+            popup.on('download', onDownload);
+            log.info(`Export opened another page: ${popup.url()}`);
+        };
+
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(
+                `No Excel download started within `
+                + `${EXCEL_EXPORT_TIMEOUT_MS}ms.`,
+            ));
+        }, EXCEL_EXPORT_TIMEOUT_MS);
+
+        cleanup = () => {
+            clearTimeout(timer);
+            page.off('download', onDownload);
+            page.off('dialog', onDialog);
+            page.off('request', onRequest);
+            context.off('page', onPopup);
+
+            for (const popup of popups) {
+                popup.off('download', onDownload);
+            }
+        };
+
+        function onDialog(dialog) {
+            dialogMessages.push(dialog.message());
+            log.info(
+                `Accepting dialog during Excel export: `
+                + dialog.message(),
+            );
+            dialog.accept().catch((error) => {
+                log.warning(
+                    `Unable to accept dialog: ${error.message}`,
+                );
+            });
+        }
+
+        function onRequest(request) {
+            const url = request.url();
+
+            if (!/export|excel|xlsx|\.xls\b|download/i.test(url)) {
+                return;
+            }
+
+            const entry = `${request.method()} ${url}`;
+            observedRequests.push(entry);
+            log.info(`Export request: ${entry}`);
+        }
+
+        page.on('download', onDownload);
+        page.on('dialog', onDialog);
+        page.on('request', onRequest);
+        context.on('page', onPopup);
+    });
+
+    const responsePromise = page.waitForResponse(
+        isExcelExportResponse,
+        { timeout: EXCEL_EXPORT_TIMEOUT_MS },
+    ).then(async (response) => {
+        log.info(
+            `Excel export response: ${response.status()} `
+            + `${response.headers()['content-type'] ?? 'unknown type'} `
+            + response.url(),
+        );
+
+        return response.body();
+    });
+
+    downloadPromise.catch(() => {});
+    responsePromise.catch(() => {});
+
+    page.waitForTimeout(5_000)
+        .then(() => saveScreenshot(page, 'REVEL_EXPORT_AFTER_CLICK'))
+        .catch((error) => {
+            log.warning(
+                `Unable to save post-click export screenshot: `
+                + error.message,
+            );
+        });
+
+    try {
+        await excelExportLink.click({ noWaitAfter: true });
+
+        const result = await Promise.any([
+            downloadPromise.then(async (download) => {
+                const downloadFailure = await download.failure();
+
+                if (downloadFailure) {
+                    throw new Error(
+                        `Excel download failed: ${downloadFailure}`,
+                    );
+                }
+
+                const temporaryFilePath = await download.path();
+
+                if (!temporaryFilePath) {
+                    throw new Error(
+                        'Playwright did not provide a path '
+                        + 'for the downloaded file.',
+                    );
+                }
+
+                return readFile(temporaryFilePath);
+            }),
+            responsePromise,
+        ]);
+
+        return result;
+    } catch (error) {
+        const reason = error instanceof AggregateError
+            ? error.errors.map((item) => item.message).join(' | ')
+            : error.message;
+
+        const alertText = (
+            await page
+                .locator(
+                    '.alert:visible, .modal:visible, '
+                    + '[role="alert"]:visible',
+                )
+                .allInnerTexts()
+                .catch(() => [])
+        )
+            .map((text) => text.replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+            .join(' | ');
+
+        throw new Error(
+            `Excel download did not start. ${reason} `
+            + `Page: ${page.url()}. `
+            + `Dialogs: ${dialogMessages.join(' | ') || 'none'}. `
+            + `Export requests: `
+            + `${observedRequests.join(' | ') || 'none'}. `
+            + `Visible alerts: ${alertText || 'none'}.`,
+        );
+    } finally {
+        cleanup();
+    }
+}
+
 /**
  * Convert each worksheet into a nested dictionary by mapping
  * row 1 headers to row 2 values. Row 3 contains report totals
@@ -729,7 +917,7 @@ try {
     const crawler = new PlaywrightCrawler({
         maxRequestsPerCrawl: 1,
         maxRequestRetries: 0,
-        requestHandlerTimeoutSecs: 240,
+        requestHandlerTimeoutSecs: 300,
 
         async requestHandler({ page, request }) {
             log.info(`Opening Revel portal: ${request.url}`);
@@ -1286,36 +1474,9 @@ try {
 
             log.info('Downloading the Sales Summary Excel report.');
 
-            const downloadPromise = page.waitForEvent(
-                'download',
-                {
-                    timeout: 60_000,
-                },
-            );
-
-            await excelExportLink.click();
-
-            const download = await downloadPromise;
-
-            const downloadFailure = await download.failure();
-
-            if (downloadFailure) {
-                throw new Error(
-                    `Excel download failed: ${downloadFailure}`,
-                );
-            }
-
-            const temporaryFilePath = await download.path();
-
-            if (!temporaryFilePath) {
-                throw new Error(
-                    'Playwright did not provide a path '
-                    + 'for the downloaded file.',
-                );
-            }
-
-            const excelBuffer = await readFile(
-                temporaryFilePath,
+            const excelBuffer = await readExcelExport(
+                page,
+                excelExportLink,
             );
 
             /*
