@@ -770,6 +770,43 @@ async function readExcelExport(page, excelExportLink) {
     }
 }
 
+function toReportNumber(value, fieldName) {
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) {
+            throw new Error(
+                `${fieldName} is not numeric: ${value}`,
+            );
+        }
+
+        return value;
+    }
+
+    if (value === undefined || value === null) {
+        return null;
+    }
+
+    const text = String(value).trim();
+
+    if (
+        text === ''
+        || text === '-'
+        || text === '—'
+        || text === '–'
+    ) {
+        return null;
+    }
+
+    const parsed = Number(text.replace(/[$,\s]/g, ''));
+
+    if (!Number.isFinite(parsed)) {
+        throw new Error(
+            `${fieldName} is not numeric: ${value}`,
+        );
+    }
+
+    return parsed;
+}
+
 /**
  * Convert each worksheet into a nested dictionary by mapping
  * row 1 headers to row 2 values. Row 3 contains report totals
@@ -1524,15 +1561,15 @@ try {
 
             /*
             * XLSX normally returns this as a number. This fallback also
-            * handles values formatted like "$5,350.50".
+            * handles values formatted like "$5,350.50". A dash means the
+            * report had no figure for that metric.
             */
-            const netSales = typeof rawNetSales === 'number'
-                ? rawNetSales
-                : Number(
-                    String(rawNetSales).replace(/[$,\s]/g, ''),
-                );
+            const netSales = toReportNumber(
+                rawNetSales,
+                'Net Sales',
+            );
 
-            if (!Number.isFinite(netSales)) {
+            if (netSales === null) {
                 throw new Error(
                     `Net Sales is not numeric: ${rawNetSales}`,
                 );
@@ -1639,6 +1676,49 @@ try {
 
                 extracted_at: new Date().toISOString(),
             };
+
+            const nonNumericColumns = new Set([
+                'id',
+                'location',
+                'business_date',
+                'time_from',
+                'time_to',
+                'raw_data',
+                'extracted_at',
+            ]);
+
+            const blankNumericFields = [];
+
+            for (const [column, original] of Object.entries(
+                dailySalesRow,
+            )) {
+                if (nonNumericColumns.has(column)) {
+                    continue;
+                }
+
+                const numericValue = toReportNumber(
+                    original,
+                    column,
+                );
+
+                if (
+                    numericValue === null
+                    && original !== undefined
+                    && original !== null
+                    && String(original).trim() !== ''
+                ) {
+                    blankNumericFields.push(`${column}=${original}`);
+                }
+
+                dailySalesRow[column] = numericValue;
+            }
+
+            if (blankNumericFields.length > 0) {
+                log.info(
+                    'Blank report values stored as null: '
+                    + blankNumericFields.join(', '),
+                );
+            }
 
             const {
                 data: savedSupabaseRows,
