@@ -124,18 +124,6 @@ function validateTime(value, fieldName) {
     }
 }
 
-function normalizeDate(value) {
-    const [month, day, year] = value.split('/');
-
-    return `${month.padStart(2, '0')}/`
-        + `${day.padStart(2, '0')}/${year}`;
-}
-
-const REPORT_START_TIME = '12:00';
-const REPORT_START_MERIDIEM = 'AM';
-const REPORT_END_TIME = '11:59';
-const REPORT_END_MERIDIEM = 'PM';
-
 const CENTRAL_TIME_ZONE = 'America/Chicago';
 
 /**
@@ -170,8 +158,7 @@ function formatDateParts({ year, month, day }) {
 }
 
 /**
- * Report date: yesterday in US Central Time, MM/DD/YYYY.
- * Start and end both use this date so the range is one calendar day.
+ * Report start date: yesterday in US Central Time, MM/DD/YYYY.
  */
 function calculateStartDate(today = new Date()) {
     const { year, month, day } = getCentralDateParts(today);
@@ -184,6 +171,13 @@ function calculateStartDate(today = new Date()) {
         month: calendarDate.getUTCMonth() + 1,
         day: calendarDate.getUTCDate(),
     });
+}
+
+/**
+ * Report end date: today in US Central Time, MM/DD/YYYY.
+ */
+function calculateEndDate(today = new Date()) {
+    return formatDateParts(getCentralDateParts(today));
 }
 
 const FILTER_COLUMNS_SET_TO_ALL = [
@@ -582,242 +576,10 @@ async function applyReportFilters(page) {
     await saveScreenshot(page, 'REVEL_FILTERS_APPLIED');
 }
 
-const EXCEL_EXPORT_TIMEOUT_MS = 150_000;
-
-function isExcelExportResponse(response) {
-    const headers = response.headers();
-    const contentType = headers['content-type'] ?? '';
-    const disposition = headers['content-disposition'] ?? '';
-    const target = `${contentType} ${disposition} ${response.url()}`;
-
-    if (/spreadsheetml|vnd\.ms-excel/i.test(contentType)) {
-        return true;
-    }
-
-    return /attachment/i.test(disposition)
-        && /\.xlsx?\b|excel|spreadsheet/i.test(target);
-}
-
 /**
- * Revel sometimes starts the file from the report page, and sometimes
- * from a popup or a spreadsheet response that Playwright does not emit
- * as a download event.
- */
-async function readExcelExport(page, excelExportLink) {
-    const context = page.context();
-    const observedRequests = [];
-    const dialogMessages = [];
-    const popups = [];
-
-    const exportTarget = await excelExportLink.evaluate((element) => ({
-        tag: element.tagName,
-        href: element.getAttribute('href'),
-        text: (element.textContent || '').replace(/\s+/g, ' ').trim(),
-    }));
-
-    log.info(
-        `Excel export control: ${exportTarget.tag} `
-        + `"${exportTarget.text}" `
-        + `href=${exportTarget.href ?? 'none'}`,
-    );
-
-    let cleanup = () => {};
-
-    const downloadPromise = new Promise((resolve, reject) => {
-        const onDownload = (download) => {
-            cleanup();
-            resolve(download);
-        };
-
-        const onPopup = (popup) => {
-            popups.push(popup);
-            popup.on('download', onDownload);
-            log.info(`Export opened another page: ${popup.url()}`);
-        };
-
-        const timer = setTimeout(() => {
-            cleanup();
-            reject(new Error(
-                `No Excel download started within `
-                + `${EXCEL_EXPORT_TIMEOUT_MS}ms.`,
-            ));
-        }, EXCEL_EXPORT_TIMEOUT_MS);
-
-        cleanup = () => {
-            clearTimeout(timer);
-            page.off('download', onDownload);
-            page.off('dialog', onDialog);
-            page.off('request', onRequest);
-            context.off('page', onPopup);
-
-            for (const popup of popups) {
-                popup.off('download', onDownload);
-            }
-        };
-
-        function onDialog(dialog) {
-            dialogMessages.push(dialog.message());
-            log.info(
-                `Accepting dialog during Excel export: `
-                + dialog.message(),
-            );
-            dialog.accept().catch((error) => {
-                log.warning(
-                    `Unable to accept dialog: ${error.message}`,
-                );
-            });
-        }
-
-        function onRequest(request) {
-            const url = request.url();
-
-            if (!/export|excel|xlsx|\.xls\b|download/i.test(url)) {
-                return;
-            }
-
-            const entry = `${request.method()} ${url}`;
-            observedRequests.push(entry);
-            log.info(`Export request: ${entry}`);
-        }
-
-        page.on('download', onDownload);
-        page.on('dialog', onDialog);
-        page.on('request', onRequest);
-        context.on('page', onPopup);
-    });
-
-    const responsePromise = page.waitForResponse(
-        isExcelExportResponse,
-        { timeout: EXCEL_EXPORT_TIMEOUT_MS },
-    ).then(async (response) => {
-        log.info(
-            `Excel export response: ${response.status()} `
-            + `${response.headers()['content-type'] ?? 'unknown type'} `
-            + response.url(),
-        );
-
-        return response.body();
-    });
-
-    downloadPromise.catch(() => {});
-    responsePromise.catch(() => {});
-
-    page.waitForTimeout(5_000)
-        .then(() => saveScreenshot(page, 'REVEL_EXPORT_AFTER_CLICK'))
-        .catch((error) => {
-            log.warning(
-                `Unable to save post-click export screenshot: `
-                + error.message,
-            );
-        });
-
-    try {
-        await excelExportLink.click({ noWaitAfter: true });
-
-        const result = await Promise.any([
-            downloadPromise.then(async (download) => {
-                const downloadFailure = await download.failure();
-
-                if (downloadFailure) {
-                    throw new Error(
-                        `Excel download failed: ${downloadFailure}`,
-                    );
-                }
-
-                const temporaryFilePath = await download.path();
-
-                if (!temporaryFilePath) {
-                    throw new Error(
-                        'Playwright did not provide a path '
-                        + 'for the downloaded file.',
-                    );
-                }
-
-                return readFile(temporaryFilePath);
-            }),
-            responsePromise,
-        ]);
-
-        return result;
-    } catch (error) {
-        const reason = error instanceof AggregateError
-            ? error.errors.map((item) => item.message).join(' | ')
-            : error.message;
-
-        const alertText = (
-            await page
-                .locator(
-                    '.alert:visible, .modal:visible, '
-                    + '[role="alert"]:visible',
-                )
-                .allInnerTexts()
-                .catch(() => [])
-        )
-            .map((text) => text.replace(/\s+/g, ' ').trim())
-            .filter(Boolean)
-            .join(' | ');
-
-        throw new Error(
-            `Excel download did not start. ${reason} `
-            + `Page: ${page.url()}. `
-            + `Dialogs: ${dialogMessages.join(' | ') || 'none'}. `
-            + `Export requests: `
-            + `${observedRequests.join(' | ') || 'none'}. `
-            + `Visible alerts: ${alertText || 'none'}.`,
-        );
-    } finally {
-        cleanup();
-    }
-}
-
-function toReportNumber(value, fieldName) {
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) {
-            throw new Error(
-                `${fieldName} is not numeric: ${value}`,
-            );
-        }
-
-        return value;
-    }
-
-    if (value === undefined || value === null) {
-        return null;
-    }
-
-    const text = String(value).trim();
-    const withoutPercent = text.replace(/%/g, '').trim();
-
-    if (
-        withoutPercent === ''
-        || withoutPercent === '-'
-        || withoutPercent === '—'
-        || withoutPercent === '–'
-    ) {
-        return null;
-    }
-
-    const parsed = Number(text.replace(/[$,\s]/g, ''));
-
-    if (!Number.isFinite(parsed)) {
-        throw new Error(
-            `${fieldName} is not numeric: ${value}`,
-        );
-    }
-
-    return parsed;
-}
-
-function isTotalLabel(value) {
-    return String(value ?? '').trim().toLowerCase() === 'total';
-}
-
-/**
- * Map each worksheet header to the report total.
- *
- * A full-day export is one row per half hour, with the day total on
- * the last row. A single-period export has the figures on the first
- * data row and may not include a total row.
+ * Convert each worksheet into a nested dictionary by mapping
+ * row 1 headers to row 2 values. Row 3 contains report totals
+ * and is intentionally ignored for a single-period export.
  */
 function workbookToNestedDictionary(workbook) {
     const sheets = {};
@@ -832,13 +594,7 @@ function workbookToNestedDictionary(workbook) {
         });
 
         const headers = rows[0] ?? [];
-        const bodyRows = rows.slice(1).filter((row) => (
-            row.some((cell) => (
-                cell !== null
-                && cell !== undefined
-                && String(cell).trim() !== ''
-            ))
-        ));
+        const values = rows[1] ?? [];
 
         if (headers.length === 0) {
             throw new Error(
@@ -846,48 +602,11 @@ function workbookToNestedDictionary(workbook) {
             );
         }
 
-        const totalRow = [...bodyRows].reverse().find((row) => (
-            row.some((cell) => isTotalLabel(cell))
-        ));
-
-        const intervalRows = bodyRows.filter((row) => (
-            !row.some((cell) => isTotalLabel(cell))
-        ));
-
-        const sourceRow = totalRow ?? intervalRows[0];
-
-        if (!sourceRow) {
+        if (values.length === 0) {
             throw new Error(
                 `Worksheet "${sheetName}" does not contain report values.`,
             );
         }
-
-        const values = headers.map(
-            (_, index) => sourceRow[index] ?? null,
-        );
-
-        if (totalRow && intervalRows.length > 0) {
-            const timeFromIndex = headers.indexOf('Time From');
-            const timeToIndex = headers.indexOf('Time To');
-            const firstInterval = intervalRows[0];
-            const lastInterval = intervalRows[intervalRows.length - 1];
-
-            if (timeFromIndex >= 0) {
-                values[timeFromIndex] =
-                    firstInterval[timeFromIndex] ?? null;
-            }
-
-            if (timeToIndex >= 0) {
-                values[timeToIndex] =
-                    lastInterval[timeToIndex] ?? null;
-            }
-        }
-
-        log.info(
-            `Worksheet "${sheetName}" uses the `
-            + `${totalRow ? 'total' : 'first'} row `
-            + `from ${bodyRows.length} data rows.`,
-        );
 
         const duplicateHeaders = headers.filter(
             (header, index) => (
@@ -937,12 +656,11 @@ try {
         override_flag = false,
         override_startDate,
         override_endDate,
+        startTime,
+        startMeridiem,
+        endTime,
+        endMeridiem,
     } = input ?? {};
-
-    const startTime = REPORT_START_TIME;
-    const endTime = REPORT_END_TIME;
-    const normalizedStartMeridiem = REPORT_START_MERIDIEM;
-    const normalizedEndMeridiem = REPORT_END_MERIDIEM;
 
     let startDate;
     let endDate;
@@ -955,21 +673,13 @@ try {
             );
         }
 
-        validateDate(override_startDate, 'override_startDate');
-        validateDate(override_endDate, 'override_endDate');
-
-        startDate = normalizeDate(override_startDate);
-        endDate = normalizeDate(override_endDate);
-
-        if (startDate !== endDate) {
-            throw new Error(
-                'Start date and end date must be the same calendar day. '
-                + `Received ${startDate} and ${endDate}.`,
-            );
-        }
+        startDate = override_startDate;
+        endDate = override_endDate;
     } else {
-        startDate = calculateStartDate(new Date());
-        endDate = startDate;
+        const today = new Date();
+
+        startDate = calculateStartDate(today);
+        endDate = calculateEndDate(today);
     }
 
     log.info('Actor input loaded.', {
@@ -979,14 +689,25 @@ try {
         override_flag,
         startDate,
         startTime,
-        startMeridiem: normalizedStartMeridiem,
+        startMeridiem,
         endDate,
         endTime,
-        endMeridiem: normalizedEndMeridiem,
+        endMeridiem,
     });
 
     if (!username || !password) {
         throw new Error('Both username and password are required.');
+    }
+
+    if (
+        !startTime
+        || !startMeridiem
+        || !endTime
+        || !endMeridiem
+    ) {
+        throw new Error(
+            'Start and end times and AM/PM values are required.',
+        );
     }
 
     if (establishment !== 'Leander') {
@@ -996,15 +717,32 @@ try {
         );
     }
 
+    validateDate(startDate, 'startDate');
+    validateDate(endDate, 'endDate');
     validateTime(startTime, 'startTime');
     validateTime(endTime, 'endTime');
+
+    const normalizedStartMeridiem =
+        startMeridiem.trim().toUpperCase();
+
+    const normalizedEndMeridiem =
+        endMeridiem.trim().toUpperCase();
+
+    if (
+        normalizedStartMeridiem !== 'AM'
+        || normalizedEndMeridiem !== 'AM'
+    ) {
+        throw new Error(
+            'The current Actor version supports AM report times only.',
+        );
+    }
 
     const targetEstablishment = 'Leander';
 
     const crawler = new PlaywrightCrawler({
         maxRequestsPerCrawl: 1,
         maxRequestRetries: 0,
-        requestHandlerTimeoutSecs: 300,
+        requestHandlerTimeoutSecs: 240,
 
         async requestHandler({ page, request }) {
             log.info(`Opening Revel portal: ${request.url}`);
@@ -1561,9 +1299,36 @@ try {
 
             log.info('Downloading the Sales Summary Excel report.');
 
-            const excelBuffer = await readExcelExport(
-                page,
-                excelExportLink,
+            const downloadPromise = page.waitForEvent(
+                'download',
+                {
+                    timeout: 60_000,
+                },
+            );
+
+            await excelExportLink.click();
+
+            const download = await downloadPromise;
+
+            const downloadFailure = await download.failure();
+
+            if (downloadFailure) {
+                throw new Error(
+                    `Excel download failed: ${downloadFailure}`,
+                );
+            }
+
+            const temporaryFilePath = await download.path();
+
+            if (!temporaryFilePath) {
+                throw new Error(
+                    'Playwright did not provide a path '
+                    + 'for the downloaded file.',
+                );
+            }
+
+            const excelBuffer = await readFile(
+                temporaryFilePath,
             );
 
             /*
@@ -1611,15 +1376,15 @@ try {
 
             /*
             * XLSX normally returns this as a number. This fallback also
-            * handles values formatted like "$5,350.50". A dash means the
-            * report had no figure for that metric.
+            * handles values formatted like "$5,350.50".
             */
-            const netSales = toReportNumber(
-                rawNetSales,
-                'Net Sales',
-            );
+            const netSales = typeof rawNetSales === 'number'
+                ? rawNetSales
+                : Number(
+                    String(rawNetSales).replace(/[$,\s]/g, ''),
+                );
 
-            if (netSales === null) {
+            if (!Number.isFinite(netSales)) {
                 throw new Error(
                     `Net Sales is not numeric: ${rawNetSales}`,
                 );
@@ -1726,49 +1491,6 @@ try {
 
                 extracted_at: new Date().toISOString(),
             };
-
-            const nonNumericColumns = new Set([
-                'id',
-                'location',
-                'business_date',
-                'time_from',
-                'time_to',
-                'raw_data',
-                'extracted_at',
-            ]);
-
-            const blankNumericFields = [];
-
-            for (const [column, original] of Object.entries(
-                dailySalesRow,
-            )) {
-                if (nonNumericColumns.has(column)) {
-                    continue;
-                }
-
-                const numericValue = toReportNumber(
-                    original,
-                    column,
-                );
-
-                if (
-                    numericValue === null
-                    && original !== undefined
-                    && original !== null
-                    && String(original).trim() !== ''
-                ) {
-                    blankNumericFields.push(`${column}=${original}`);
-                }
-
-                dailySalesRow[column] = numericValue;
-            }
-
-            if (blankNumericFields.length > 0) {
-                log.info(
-                    'Blank report values stored as null: '
-                    + blankNumericFields.join(', '),
-                );
-            }
 
             const {
                 data: savedSupabaseRows,
