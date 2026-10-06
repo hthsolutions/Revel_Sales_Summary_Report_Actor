@@ -786,12 +786,13 @@ function toReportNumber(value, fieldName) {
     }
 
     const text = String(value).trim();
+    const withoutPercent = text.replace(/%/g, '').trim();
 
     if (
-        text === ''
-        || text === '-'
-        || text === '—'
-        || text === '–'
+        withoutPercent === ''
+        || withoutPercent === '-'
+        || withoutPercent === '—'
+        || withoutPercent === '–'
     ) {
         return null;
     }
@@ -807,10 +808,16 @@ function toReportNumber(value, fieldName) {
     return parsed;
 }
 
+function isTotalLabel(value) {
+    return String(value ?? '').trim().toLowerCase() === 'total';
+}
+
 /**
- * Convert each worksheet into a nested dictionary by mapping
- * row 1 headers to row 2 values. Row 3 contains report totals
- * and is intentionally ignored for a single-period export.
+ * Map each worksheet header to the report total.
+ *
+ * A full-day export is one row per half hour, with the day total on
+ * the last row. A single-period export has the figures on the first
+ * data row and may not include a total row.
  */
 function workbookToNestedDictionary(workbook) {
     const sheets = {};
@@ -825,7 +832,13 @@ function workbookToNestedDictionary(workbook) {
         });
 
         const headers = rows[0] ?? [];
-        const values = rows[1] ?? [];
+        const bodyRows = rows.slice(1).filter((row) => (
+            row.some((cell) => (
+                cell !== null
+                && cell !== undefined
+                && String(cell).trim() !== ''
+            ))
+        ));
 
         if (headers.length === 0) {
             throw new Error(
@@ -833,11 +846,48 @@ function workbookToNestedDictionary(workbook) {
             );
         }
 
-        if (values.length === 0) {
+        const totalRow = [...bodyRows].reverse().find((row) => (
+            row.some((cell) => isTotalLabel(cell))
+        ));
+
+        const intervalRows = bodyRows.filter((row) => (
+            !row.some((cell) => isTotalLabel(cell))
+        ));
+
+        const sourceRow = totalRow ?? intervalRows[0];
+
+        if (!sourceRow) {
             throw new Error(
                 `Worksheet "${sheetName}" does not contain report values.`,
             );
         }
+
+        const values = headers.map(
+            (_, index) => sourceRow[index] ?? null,
+        );
+
+        if (totalRow && intervalRows.length > 0) {
+            const timeFromIndex = headers.indexOf('Time From');
+            const timeToIndex = headers.indexOf('Time To');
+            const firstInterval = intervalRows[0];
+            const lastInterval = intervalRows[intervalRows.length - 1];
+
+            if (timeFromIndex >= 0) {
+                values[timeFromIndex] =
+                    firstInterval[timeFromIndex] ?? null;
+            }
+
+            if (timeToIndex >= 0) {
+                values[timeToIndex] =
+                    lastInterval[timeToIndex] ?? null;
+            }
+        }
+
+        log.info(
+            `Worksheet "${sheetName}" uses the `
+            + `${totalRow ? 'total' : 'first'} row `
+            + `from ${bodyRows.length} data rows.`,
+        );
 
         const duplicateHeaders = headers.filter(
             (header, index) => (
