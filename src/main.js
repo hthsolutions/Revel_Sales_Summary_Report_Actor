@@ -612,6 +612,30 @@ function toReportNumber(value, fieldName) {
     return isPercent ? numeric / 100 : numeric;
 }
 
+/**
+ * The Total row labels column B as "Total" instead of a clock time.
+ * Store the report window that was requested, as YYYY-MM-DD HH:MM:SS.
+ */
+function toReportTimestamp(dateValue, timeValue, meridiemValue) {
+    const [month, day, year] = dateValue.split('/');
+    const [hourText, minuteText] = timeValue.split(':');
+
+    let hour = Number(hourText);
+    const minute = Number(minuteText);
+    const meridiem = meridiemValue.trim().toUpperCase();
+
+    if (meridiem === 'AM' && hour === 12) hour = 0;
+    if (meridiem === 'PM' && hour !== 12) hour += 12;
+
+    const datePart = `${year}-${month.padStart(2, '0')}`
+        + `-${day.padStart(2, '0')}`;
+
+    const timePart = `${String(hour).padStart(2, '0')}:`
+        + `${String(minute).padStart(2, '0')}:00`;
+
+    return `${datePart} ${timePart}`;
+}
+
 const NUMERIC_REPORT_FIELDS = [
     'taxable_sales',
     'total_product_sales',
@@ -1502,8 +1526,16 @@ try {
                 location: selectedEstablishment,
                 business_date: formattedStartDate,
 
-                time_from: allRevenueCenters['Time From'],
-                time_to: allRevenueCenters['Time To'],
+                time_from: toReportTimestamp(
+                    startDate,
+                    startTime,
+                    normalizedStartMeridiem,
+                ),
+                time_to: toReportTimestamp(
+                    endDate,
+                    endTime,
+                    normalizedEndMeridiem,
+                ),
 
                 taxable_sales: allRevenueCenters['Taxable Sales'],
                 total_product_sales:
