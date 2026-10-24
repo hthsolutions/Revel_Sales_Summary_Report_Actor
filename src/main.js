@@ -665,8 +665,8 @@ const NUMERIC_REPORT_FIELDS = [
 
 /**
  * Convert each worksheet into a nested dictionary by mapping
- * row 1 headers to row 2 values. Row 3 contains report totals
- * and is intentionally ignored for a single-period export.
+ * row 1 headers to the row whose column B is "Total".
+ * Half-hour rows above that line are not included.
  */
 function workbookToNestedDictionary(workbook) {
     const sheets = {};
@@ -681,7 +681,13 @@ function workbookToNestedDictionary(workbook) {
         });
 
         const headers = rows[0] ?? [];
-        const values = rows[1] ?? [];
+
+        const totalRowIndex = rows.findLastIndex((row) => (
+            String(row?.[1] ?? '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase() === 'total'
+        ));
 
         if (headers.length === 0) {
             throw new Error(
@@ -689,11 +695,19 @@ function workbookToNestedDictionary(workbook) {
             );
         }
 
-        if (values.length === 0) {
+        if (totalRowIndex < 0) {
             throw new Error(
-                `Worksheet "${sheetName}" does not contain report values.`,
+                `Worksheet "${sheetName}" has no row whose `
+                + 'column B is "Total".',
             );
         }
+
+        const values = rows[totalRowIndex];
+
+        log.info(
+            `Using the Total row on "${sheetName}" `
+            + `(row ${totalRowIndex + 1}).`,
+        );
 
         const duplicateHeaders = headers.filter(
             (header, index) => (
