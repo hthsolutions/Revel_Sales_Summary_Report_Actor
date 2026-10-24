@@ -577,6 +577,93 @@ async function applyReportFilters(page) {
 }
 
 /**
+ * Revel writes "-%" when a percent has no sales to divide, and
+ * sometimes returns a percent as text such as "14.51%". Numeric
+ * columns already store percents as fractions, so "14.51%" becomes
+ * 0.1451 and the placeholder becomes 0.
+ */
+function toReportNumber(value, fieldName) {
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) {
+            throw new Error(
+                `${fieldName} is not numeric: ${value}`,
+            );
+        }
+
+        return value;
+    }
+
+    if (value === null || value === undefined) return null;
+
+    const text = String(value).replace(/\s+/g, '');
+
+    if (text === '' || text === '-' || text === '-%') return 0;
+
+    const isPercent = text.endsWith('%');
+
+    const numeric = Number(text.replace(/[$,%]/g, ''));
+
+    if (!Number.isFinite(numeric)) {
+        throw new Error(
+            `${fieldName} is not numeric: ${JSON.stringify(value)}`,
+        );
+    }
+
+    return isPercent ? numeric / 100 : numeric;
+}
+
+const NUMERIC_REPORT_FIELDS = [
+    'taxable_sales',
+    'total_product_sales',
+    'gross_sales',
+    'net_sales',
+    'total_payments',
+    'net_account_for',
+    'to_go',
+    'to_go_percent',
+    'eat_in',
+    'eat_in_percent',
+    'drive_through',
+    'drive_through_percent',
+    'pickup',
+    'pickup_percent',
+    'dd_marketplace',
+    'dd_marketplace_percent',
+    'uber_eats',
+    'uber_eats_percent',
+    'item_discounts',
+    'order_discounts_total',
+    'total_discounts',
+    'sales_tax',
+    'total_tax_surcharge_service',
+    'cash_total',
+    'credit_total',
+    'visa_total',
+    'mastercard_total',
+    'american_express_total',
+    'discover_total',
+    'custom_payment_total',
+    'uber_eats_total',
+    'dd_marketplace_total',
+    'actual_total_cash_to_business',
+    'payments_captured_amount',
+    'refunds_total',
+    'refunds_count',
+    'voided_total',
+    'voided_items',
+    'adj_non_cash_tips_total_minus_cash',
+    'total_orders',
+    'avg_sale',
+    'cash_due_house',
+    'cash_due_payments',
+    'cash_payments',
+    'counter_sales_net_sales',
+    'counter_sales_net_sales_percent',
+    'drive_thru_sales_net_sales',
+    'drive_thru_sales_net_sales_percent',
+];
+
+/**
  * Convert each worksheet into a nested dictionary by mapping
  * row 1 headers to row 2 values. Row 3 contains report totals
  * and is intentionally ignored for a single-period export.
@@ -1374,15 +1461,10 @@ try {
                 );
             }
 
-            /*
-            * XLSX normally returns this as a number. This fallback also
-            * handles values formatted like "$5,350.50".
-            */
-            const netSales = typeof rawNetSales === 'number'
-                ? rawNetSales
-                : Number(
-                    String(rawNetSales).replace(/[$,\s]/g, ''),
-                );
+            const netSales = toReportNumber(
+                rawNetSales,
+                'Net Sales',
+            );
 
             if (!Number.isFinite(netSales)) {
                 throw new Error(
@@ -1491,6 +1573,35 @@ try {
 
                 extracted_at: new Date().toISOString(),
             };
+
+            const normalizedPlaceholders = [];
+
+            for (const field of NUMERIC_REPORT_FIELDS) {
+                const original = dailySalesRow[field];
+
+                dailySalesRow[field] = toReportNumber(
+                    original,
+                    field,
+                );
+
+                if (
+                    typeof original === 'string'
+                    && /-%|^-$|%$/.test(
+                        original.replace(/\s+/g, ''),
+                    )
+                ) {
+                    normalizedPlaceholders.push(
+                        `${field}=${JSON.stringify(original)}`,
+                    );
+                }
+            }
+
+            if (normalizedPlaceholders.length > 0) {
+                log.info(
+                    'Normalized Revel percent placeholders: '
+                    + normalizedPlaceholders.join(', '),
+                );
+            }
 
             const {
                 data: savedSupabaseRows,
