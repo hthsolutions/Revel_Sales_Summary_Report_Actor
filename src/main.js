@@ -180,6 +180,18 @@ function calculateEndDate(today = new Date()) {
     return formatDateParts(getCentralDateParts(today));
 }
 
+const ESTABLISHMENTS = {
+    Lampasas: '41 | Lampasas',
+    Leander: '42 | Leander',
+    'Marble Falls': '29 | Marble Falls',
+};
+
+function establishmentHeaderPattern(name) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    return new RegExp(`^\\s*${escaped}\\s*$`);
+}
+
 const FILTER_COLUMNS_SET_TO_ALL = [
     'Dining Options',
     'Pos Stations',
@@ -835,10 +847,13 @@ try {
         );
     }
 
-    if (establishment !== 'Leander') {
+    const treeLabel = ESTABLISHMENTS[establishment];
+
+    if (!treeLabel) {
         throw new Error(
-            `The current Actor version only supports Leander. `
-            + `Received: ${establishment}`,
+            `Unsupported establishment "${establishment}". `
+            + `Supported establishments: `
+            + `${Object.keys(ESTABLISHMENTS).join(', ')}.`,
         );
     }
 
@@ -862,7 +877,7 @@ try {
         );
     }
 
-    const targetEstablishment = 'Leander';
+    const targetEstablishment = establishment;
 
     const crawler = new PlaywrightCrawler({
         maxRequestsPerCrawl: 1,
@@ -974,13 +989,13 @@ try {
 
                 log.info('Clicked the establishment name.');
 
-                const leanderOption = page
+                const establishmentOption = page
                     .locator('span.fancytree-title')
                     .filter({
-                        hasText: '42 | Leander',
+                        hasText: treeLabel,
                     });
 
-                await leanderOption.waitFor({
+                await establishmentOption.waitFor({
                     state: 'visible',
                     timeout: 30_000,
                 });
@@ -993,16 +1008,18 @@ try {
                 );
 
                 log.info(
-                    `Selecting establishment: ${targetEstablishment}`,
+                    `Selecting establishment: ${treeLabel}`,
                 );
 
-                await leanderOption.click();
+                await establishmentOption.click();
             }
 
             const selectedHeader = page
                 .locator('[data-cy="header-establishment-text"]')
                 .filter({
-                    hasText: /^\s*Leander\s*$/,
+                    hasText: establishmentHeaderPattern(
+                        targetEstablishment,
+                    ),
                 });
 
             await selectedHeader.waitFor({
@@ -1037,7 +1054,9 @@ try {
 
             await saveScreenshot(
                 page,
-                'REVEL_LEANDER_SALES_SUMMARY',
+                `REVEL_${targetEstablishment
+                    .replace(/\s+/g, '_')
+                    .toUpperCase()}_SALES_SUMMARY`,
             );
 
             await applyReportFilters(page);
@@ -1695,7 +1714,7 @@ try {
                 sourceSizeBytes: excelBuffer.length,
                 timestamp: new Date().toISOString(),
                 message:
-                    'Logged into Revel, selected Leander, '
+                    `Logged into Revel, selected ${selectedEstablishment}, `
                     + 'applied the Sales Summary date range, '
                     + 'parsed every worksheet, and saved the daily sales row.',
             });
