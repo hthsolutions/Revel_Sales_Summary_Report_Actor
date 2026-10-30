@@ -232,8 +232,8 @@ async function applyReportFilters(page) {
     });
 
     /*
-     * Switching establishments reloads the report, and the Filters button
-     * ignores clicks until Revel has rebound its handlers.
+     * A new date range reloads the report, and the Filters button ignores
+     * clicks until Revel has rebound its handlers.
      */
     await waitForReportIdle(page);
 
@@ -1060,8 +1060,6 @@ try {
                     .toUpperCase()}_SALES_SUMMARY`,
             );
 
-            await applyReportFilters(page);
-
             const dateRangeDropdown = page.locator(
                 '.report-date-row .ico-f-to-down',
             );
@@ -1408,6 +1406,8 @@ try {
             log.info(
                 'Sales Summary refreshed for the requested date range.',
             );
+
+            await applyReportFilters(page);
 
             /*
              * Open the three-dot export menu.
